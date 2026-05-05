@@ -672,7 +672,7 @@
             tbody.innerHTML = logs.map((log) => {
                 const statusClass = log.status_code >= 200 && log.status_code < 300 ? 'status-2xx' :
                                    log.status_code >= 400 && log.status_code < 500 ? 'status-4xx' : 'status-5xx';
-                const time = new Date(log.timestamp).toLocaleTimeString();
+                const time = new Date(log.timestamp).toLocaleString();
                 const modelName = log.model || 'unknown';
                 const shortModel = modelName.length > 15 ? modelName.substring(0, 15) + '...' : modelName;
                 
