@@ -229,6 +229,49 @@
             backdrop-filter: blur(10px);
         }
 
+        .pagination {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            background: rgba(0, 0, 0, 0.2);
+            color: #888;
+            font-size: 0.9em;
+        }
+
+        .page-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .page-btn {
+            background: rgba(0, 217, 255, 0.15);
+            border: 1px solid rgba(0, 217, 255, 0.5);
+            color: #00d9ff;
+            padding: 6px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85em;
+            transition: all 0.2s ease;
+        }
+
+        .page-btn:hover:enabled {
+            background: rgba(0, 217, 255, 0.25);
+        }
+
+        .page-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .page-current {
+            color: #e0e0e0;
+            font-weight: 600;
+            margin: 0 6px;
+        }
+
         table {
             width: 100%;
             border-collapse: collapse;
@@ -451,6 +494,7 @@
             .detail-grid { grid-template-columns: 1fr; }
             th, td { padding: 10px; font-size: 0.9em; }
             .modal-content { margin: 10px; }
+            .pagination { flex-direction: column; gap: 10px; }
         }
     </style>
 </head>
@@ -515,6 +559,16 @@
                     </tr>
                 </tbody>
             </table>
+            <div class="pagination" id="pagination">
+                <div class="page-info">Showing 0-0 of 0</div>
+                <div class="page-controls">
+                    <button class="page-btn" disabled>First</button>
+                    <button class="page-btn" disabled>Prev</button>
+                    <span class="page-current">Page 1 of 1</span>
+                    <button class="page-btn" disabled>Next</button>
+                    <button class="page-btn" disabled>Last</button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -566,16 +620,28 @@
     <script>
         let allLogs = [];
         let autoRefreshInterval = null;
+        let currentPage = 1;
+        let pageSize = 50;
+        let totalPages = 1;
+        let lastSeenId = 0;
+        let lastSeenTimestamp = '';
 
-        function loadLogs() {
+        function loadLogs(page = currentPage) {
+            currentPage = page;
             Promise.all([
-                fetch('/api/logs').then(res => res.json()),
+                fetch(`/api/logs?page=${currentPage}&page_size=${pageSize}`).then(res => res.json()),
                 fetch('/api/stats').then(res => res.json())
             ])
-            .then(([logsData, statsData]) => {
-                allLogs = logsData;
+            .then(([logsResponse, statsData]) => {
+                allLogs = logsResponse.items || [];
+                totalPages = logsResponse.total_pages || 1;
+                if (allLogs.length > 0) {
+                    lastSeenId = allLogs[0].id || lastSeenId;
+                    lastSeenTimestamp = allLogs[0].timestamp || lastSeenTimestamp;
+                }
                 updateStats(statsData);
-                renderTable(logsData);
+                renderTable(allLogs);
+                updatePagination(logsResponse);
             })
             .catch(err => console.error('Error loading logs:', err));
         }
@@ -603,7 +669,7 @@
                 return;
             }
 
-            tbody.innerHTML = logs.map((log, index) => {
+            tbody.innerHTML = logs.map((log) => {
                 const statusClass = log.status_code >= 200 && log.status_code < 300 ? 'status-2xx' :
                                    log.status_code >= 400 && log.status_code < 500 ? 'status-4xx' : 'status-5xx';
                 const time = new Date(log.timestamp).toLocaleTimeString();
@@ -618,18 +684,27 @@
                         <td>${log.latency_ms}ms</td>
                         <td>${(log.input_tokens || 0).toLocaleString()} / ${(log.output_tokens || 0).toLocaleString()}</td>
                         <td><span class="cost-badge">₹${(log.cost_inr || 0).toFixed(4)}</span></td>
-                        <td><button class="view-btn" onclick="showDetail(${index})">View</button></td>
+                        <td><button class="view-btn" onclick="showDetail(${log.id})">View</button></td>
                     </tr>
                 `;
             }).join('');
         }
 
-        function showDetail(index) {
-            const log = allLogs[index];
+        function showDetail(id) {
             const modal = document.getElementById('detailModal');
             const body = document.getElementById('modalBody');
+            body.innerHTML = `<div class="detail-section">Loading...</div>`;
+            modal.classList.add('active');
 
-            body.innerHTML = `
+            fetch(`/api/logs/${id}`)
+                .then(res => {
+                    if (!res.ok) {
+                        throw new Error('Failed to load log detail');
+                    }
+                    return res.json();
+                })
+                .then(log => {
+                    body.innerHTML = `
                 <div class="detail-section">
                     <h3>Request Information</h3>
                     <div class="detail-grid">
@@ -678,8 +753,10 @@
                     <pre>${formatJSON(log.response_body)}</pre>
                 </div>
             `;
-
-            modal.classList.add('active');
+                })
+                .catch(err => {
+                    body.innerHTML = `<div class="detail-section">${err.message}</div>`;
+                });
         }
 
         function closeModal() {
@@ -760,8 +837,48 @@
             }
 
             if (interval > 0) {
-                autoRefreshInterval = setInterval(loadLogs, interval * 1000);
+                autoRefreshInterval = setInterval(checkForUpdates, interval * 1000);
             }
+        }
+
+        function checkForUpdates() {
+            if (currentPage !== 1) {
+                return;
+            }
+
+            fetch('/api/logs/last-updated')
+                .then(res => res.json())
+                .then(data => {
+                    const latestId = data.last_id || 0;
+                    const latestTimestamp = data.last_timestamp || '';
+                    if (latestId !== lastSeenId || latestTimestamp !== lastSeenTimestamp) {
+                        loadLogs(1);
+                    }
+                })
+                .catch(err => console.error('Error checking updates:', err));
+        }
+
+        function updatePagination(logsResponse) {
+            const pagination = document.getElementById('pagination');
+            if (!pagination) {
+                return;
+            }
+
+            totalPages = logsResponse.total_pages || 1;
+            const total = logsResponse.total || 0;
+            const start = total === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+            const end = Math.min(currentPage * pageSize, total);
+
+            pagination.innerHTML = `
+                <div class="page-info">Showing ${start}-${end} of ${total}</div>
+                <div class="page-controls">
+                    <button class="page-btn" ${currentPage === 1 ? 'disabled' : ''} onclick="loadLogs(1)">First</button>
+                    <button class="page-btn" ${currentPage === 1 ? 'disabled' : ''} onclick="loadLogs(${currentPage - 1})">Prev</button>
+                    <span class="page-current">Page ${currentPage} of ${totalPages}</span>
+                    <button class="page-btn" ${currentPage >= totalPages ? 'disabled' : ''} onclick="loadLogs(${currentPage + 1})">Next</button>
+                    <button class="page-btn" ${currentPage >= totalPages ? 'disabled' : ''} onclick="loadLogs(${totalPages})">Last</button>
+                </div>
+            `;
         }
 
         // Close modal on outside click

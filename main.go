@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -147,6 +148,17 @@ func init() {
 		log.Fatal("Failed to create table:", err)
 	}
 
+	createIndexesSQL := []string{
+		"CREATE INDEX IF NOT EXISTS idx_request_logs_timestamp ON request_logs(timestamp)",
+		"CREATE INDEX IF NOT EXISTS idx_request_logs_status_code ON request_logs(status_code)",
+		"CREATE INDEX IF NOT EXISTS idx_request_logs_model ON request_logs(model)",
+	}
+	for _, statement := range createIndexesSQL {
+		if _, err := db.Exec(statement); err != nil {
+			log.Fatal("Failed to create index:", err)
+		}
+	}
+
 	log.Printf("Loaded configuration:")
 	log.Printf("  Upstream URL: %s", apiBase)
 	log.Printf("  Model: %s", model)
@@ -172,6 +184,8 @@ func loadPricing() {
 func main() {
 	// Register handlers
 	http.HandleFunc("/api/logs", logsHandler)
+	http.HandleFunc("/api/logs/", logsHandler)
+	http.HandleFunc("/api/logs/last-updated", lastUpdatedHandler)
 	http.HandleFunc("/api/stats", statsHandler)
 	http.HandleFunc("/api/config", configHandler)
 	http.HandleFunc("/dashboard", dashboardHandler)
@@ -193,15 +207,17 @@ func rateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		// Skip rate limiting for dashboard and api routes
-		if r.URL.Path == "/dashboard" || r.URL.Path == "/api/logs" || r.URL.Path == "/api/stats" || r.URL.Path == "/api/config" {
-			switch r.URL.Path {
-			case "/dashboard":
+		if r.URL.Path == "/dashboard" || r.URL.Path == "/api/logs" || r.URL.Path == "/api/stats" || r.URL.Path == "/api/config" || strings.HasPrefix(r.URL.Path, "/api/logs/") {
+			switch {
+			case r.URL.Path == "/dashboard":
 				dashboardHandler(w, r)
-			case "/api/logs":
+			case strings.HasPrefix(r.URL.Path, "/api/logs/last-updated"):
+				lastUpdatedHandler(w, r)
+			case strings.HasPrefix(r.URL.Path, "/api/logs"):
 				logsHandler(w, r)
-			case "/api/stats":
+			case r.URL.Path == "/api/stats":
 				statsHandler(w, r)
-			case "/api/config":
+			case r.URL.Path == "/api/config":
 				configHandler(w, r)
 			}
 			return
@@ -223,6 +239,11 @@ func rateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 func proxyHandler(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
+
+	if r.URL.Path == "/.well-known/appspecific/com.chrome.devtools.json" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
 
 	// Capture client IP
 	clientIP := r.RemoteAddr
@@ -363,16 +384,40 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func logsHandler(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api/logs/") {
+		logDetailHandler(w, r)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
+
+	page := intFromQuery(r, "page", 1)
+	pageSize := intFromQuery(r, "page_size", 50)
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 50
+	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
+	offset := (page - 1) * pageSize
+
+	var total int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM request_logs`).Scan(&total); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
 	rows, err := db.Query(`
 		SELECT id, timestamp, client_ip, upstream_url, method, path,
-		       status_code, latency_ms, request_body, response_body,
+		       status_code, latency_ms,
 		       input_tokens, output_tokens, total_tokens, cached_tokens, cost_inr, model
 		FROM request_logs
 		ORDER BY id DESC
-		LIMIT 100
-	`)
+		LIMIT ? OFFSET ?
+	`, pageSize, offset)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -385,7 +430,6 @@ func logsHandler(w http.ResponseWriter, r *http.Request) {
 		err := rows.Scan(
 			&reqLog.ID, &reqLog.Timestamp, &reqLog.ClientIP, &reqLog.UpstreamURL,
 			&reqLog.Method, &reqLog.Path, &reqLog.StatusCode, &reqLog.LatencyMs,
-			&reqLog.RequestBody, &reqLog.ResponseBody,
 			&reqLog.InputTokens, &reqLog.OutputTokens, &reqLog.TotalTokens,
 			&reqLog.CachedTokens, &reqLog.CostINR, &reqLog.Model,
 		)
@@ -396,7 +440,94 @@ func logsHandler(w http.ResponseWriter, r *http.Request) {
 		logs = append(logs, reqLog)
 	}
 
-	json.NewEncoder(w).Encode(logs)
+	response := map[string]interface{}{
+		"page":        page,
+		"page_size":   pageSize,
+		"total":       total,
+		"total_pages": totalPages(total, pageSize),
+		"items":       logs,
+	}
+
+	json.NewEncoder(w).Encode(response)
+}
+
+func logDetailHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/logs/"), "/")
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+		http.Error(w, "Missing log id", http.StatusBadRequest)
+		return
+	}
+
+	id, err := strconv.Atoi(parts[0])
+	if err != nil || id < 1 {
+		http.Error(w, "Invalid log id", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	var reqLog RequestLog
+	if err := db.QueryRow(`
+		SELECT id, timestamp, client_ip, upstream_url, method, path,
+		       status_code, latency_ms, request_body, response_body,
+		       input_tokens, output_tokens, total_tokens, cached_tokens, cost_inr, model
+		FROM request_logs
+		WHERE id = ?
+		LIMIT 1
+	`, id).Scan(
+		&reqLog.ID, &reqLog.Timestamp, &reqLog.ClientIP, &reqLog.UpstreamURL,
+		&reqLog.Method, &reqLog.Path, &reqLog.StatusCode, &reqLog.LatencyMs,
+		&reqLog.RequestBody, &reqLog.ResponseBody,
+		&reqLog.InputTokens, &reqLog.OutputTokens, &reqLog.TotalTokens,
+		&reqLog.CachedTokens, &reqLog.CostINR, &reqLog.Model,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "Log not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(reqLog)
+}
+
+func lastUpdatedHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	var lastID int
+	var lastTimestamp sql.NullString
+	if err := db.QueryRow(`
+		SELECT id, timestamp
+		FROM request_logs
+		ORDER BY id DESC
+		LIMIT 1
+	`).Scan(&lastID, &lastTimestamp); err != nil {
+		if err == sql.ErrNoRows {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"last_id":        0,
+				"last_timestamp": "",
+			})
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"last_id":        lastID,
+		"last_timestamp": lastTimestamp.String,
+	})
 }
 
 func statsHandler(w http.ResponseWriter, r *http.Request) {
@@ -851,6 +982,32 @@ func intFromMap(values map[string]interface{}, key string) int {
 	default:
 		return 0
 	}
+}
+
+func intFromQuery(r *http.Request, key string, fallback int) int {
+	value := strings.TrimSpace(r.URL.Query().Get(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func totalPages(total, pageSize int) int {
+	if pageSize <= 0 {
+		return 0
+	}
+	pages := total / pageSize
+	if total%pageSize != 0 {
+		pages++
+	}
+	if pages == 0 {
+		return 1
+	}
+	return pages
 }
 
 // calculateCost calculates the cost in USD based on model and token usage
