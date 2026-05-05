@@ -1,0 +1,14 @@
+[Unit]
+Description=LLM Proxy for Hermes
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/llmproxy
+ExecStart=/path/to/llmproxy/llmproxy
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,32 @@
+{
+	"gpt-5-nano": {
+		"InputPrice": 0.05,
+		"CachedPrice": 0.01,
+		"OutputPrice": 0.40
+	},
+	"gpt-4o-mini": {
+		"InputPrice": 14.84691,
+		"CachedPrice": 7.4685,
+		"OutputPrice": 59.3877
+	},
+	"gpt-4.1-mini": {
+		"InputPrice": 0.40,
+		"CachedPrice": 0.10,
+		"OutputPrice": 1.60
+	},
+	"gpt-4o": {
+		"InputPrice": 148.4691,
+		"CachedPrice": 59.3876,
+		"OutputPrice": 593.877
+	},
+	"gpt-4-turbo": {
+		"InputPrice": 89.0815,
+		"CachedPrice": 0,
+		"OutputPrice": 267.2444
+	},
+	"gpt-3.5-turbo": {
+		"InputPrice": 2.9753,
+		"CachedPrice": 0,
+		"OutputPrice": 11.9009
+	}
+}
