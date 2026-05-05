@@ -173,6 +173,7 @@ func main() {
 	// Register handlers
 	http.HandleFunc("/api/logs", logsHandler)
 	http.HandleFunc("/api/stats", statsHandler)
+	http.HandleFunc("/api/config", configHandler)
 	http.HandleFunc("/dashboard", dashboardHandler)
 	http.HandleFunc("/", rateLimitMiddleware(proxyHandler))
 
@@ -192,7 +193,7 @@ func rateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		// Skip rate limiting for dashboard and api routes
-		if r.URL.Path == "/dashboard" || r.URL.Path == "/api/logs" || r.URL.Path == "/api/stats" {
+		if r.URL.Path == "/dashboard" || r.URL.Path == "/api/logs" || r.URL.Path == "/api/stats" || r.URL.Path == "/api/config" {
 			switch r.URL.Path {
 			case "/dashboard":
 				dashboardHandler(w, r)
@@ -200,6 +201,8 @@ func rateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
 				logsHandler(w, r)
 			case "/api/stats":
 				statsHandler(w, r)
+			case "/api/config":
+				configHandler(w, r)
 			}
 			return
 		}
@@ -436,6 +439,86 @@ func statsHandler(w http.ResponseWriter, r *http.Request) {
 
 func dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, "dashboard.html")
+}
+
+type configResponse struct {
+	APIBase string `json:"api_base"`
+	Model   string `json:"model"`
+}
+
+type configUpdate struct {
+	APIBase *string `json:"api_base"`
+	APIKey  *string `json:"api_key"`
+	Model   *string `json:"model"`
+}
+
+func configHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(configResponse{
+			APIBase: apiBase,
+			Model:   model,
+		})
+		return
+	case http.MethodPost:
+		var update configUpdate
+		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+			http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
+			return
+		}
+
+		updates := make(map[string]string)
+		if update.APIBase != nil {
+			value := strings.TrimSpace(*update.APIBase)
+			if value == "" {
+				http.Error(w, "api_base cannot be empty", http.StatusBadRequest)
+				return
+			}
+			apiBase = value
+			os.Setenv("API_BASE", value)
+			updates["API_BASE"] = value
+		}
+		if update.Model != nil {
+			value := strings.TrimSpace(*update.Model)
+			if value == "" {
+				http.Error(w, "model cannot be empty", http.StatusBadRequest)
+				return
+			}
+			model = value
+			os.Setenv("MODEL", value)
+			updates["MODEL"] = value
+		}
+		if update.APIKey != nil {
+			value := strings.TrimSpace(*update.APIKey)
+			if value == "" {
+				http.Error(w, "api_key cannot be empty", http.StatusBadRequest)
+				return
+			}
+			apiKey = value
+			os.Setenv("API_KEY", value)
+			updates["API_KEY"] = value
+		}
+		if len(updates) == 0 {
+			http.Error(w, "No settings to update", http.StatusBadRequest)
+			return
+		}
+
+		if err := updateEnvFile(".env", updates); err != nil {
+			http.Error(w, "Failed to update .env", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(configResponse{
+			APIBase: apiBase,
+			Model:   model,
+		})
+		return
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
 }
 
 func localMetadataResponse(path string) ([]byte, bool) {
@@ -829,4 +912,58 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+func updateEnvFile(path string, updates map[string]string) error {
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	lines := []string{}
+	if err == nil {
+		lines = strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+	}
+
+	seen := make(map[string]bool)
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		idx := strings.Index(line, "=")
+		if idx == -1 {
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		if value, ok := updates[key]; ok {
+			lines[i] = fmt.Sprintf("%s=%s", key, formatEnvValue(value))
+			seen[key] = true
+		}
+	}
+
+	for key, value := range updates {
+		if seen[key] {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%s=%s", key, formatEnvValue(value)))
+	}
+
+	content := strings.Join(lines, "\n")
+	if !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	return os.WriteFile(path, []byte(content), 0644)
+}
+
+func formatEnvValue(value string) string {
+	if value == "" {
+		return ""
+	}
+	if strings.ContainsAny(value, " \t\n#=") {
+		escaped := strings.ReplaceAll(value, "\\", "\\\\")
+		escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
+		return "\"" + escaped + "\""
+	}
+	return value
 }

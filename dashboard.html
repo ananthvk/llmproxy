@@ -88,6 +88,12 @@
             gap: 15px;
         }
 
+        .control-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
         .refresh-btn {
             background: linear-gradient(135deg, #00d9ff 0%, #00ff88 100%);
             border: none;
@@ -109,6 +115,23 @@
             transform: scale(0.98);
         }
 
+        .settings-btn {
+            background: rgba(0, 217, 255, 0.15);
+            border: 1px solid rgba(0, 217, 255, 0.5);
+            color: #00d9ff;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 0.95em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .settings-btn:hover {
+            background: rgba(0, 217, 255, 0.25);
+            box-shadow: 0 5px 20px rgba(0, 217, 255, 0.2);
+        }
+
         .auto-refresh {
             display: flex;
             align-items: center;
@@ -124,6 +147,78 @@
             border-radius: 5px;
             color: #e0e0e0;
             text-align: center;
+        }
+
+        .settings-form {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 15px;
+        }
+
+        .form-row {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .form-row label {
+            color: #888;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+        }
+
+        .form-row input {
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            background: rgba(255, 255, 255, 0.05);
+            color: #e0e0e0;
+            font-size: 1em;
+        }
+
+        .form-row input:focus {
+            outline: none;
+            border-color: rgba(0, 217, 255, 0.6);
+            box-shadow: 0 0 0 2px rgba(0, 217, 255, 0.15);
+        }
+
+        .helper-text {
+            color: #888;
+            font-size: 0.85em;
+        }
+
+        .modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+            margin-top: 20px;
+        }
+
+        .secondary-btn {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: #e0e0e0;
+            padding: 10px 18px;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+
+        .primary-btn {
+            background: linear-gradient(135deg, #00d9ff 0%, #00ff88 100%);
+            border: none;
+            color: #1a1a2e;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .status-message {
+            margin-top: 12px;
+            color: #ff9500;
+            font-size: 0.9em;
+            min-height: 1.2em;
         }
 
         .table-container {
@@ -388,7 +483,10 @@
         </div>
 
         <div class="controls">
-            <button class="refresh-btn" onclick="loadLogs()">🔄 Refresh</button>
+            <div class="control-actions">
+                <button class="refresh-btn" onclick="loadLogs()">🔄 Refresh</button>
+                <button class="settings-btn" onclick="openSettings()">⚙️ Settings</button>
+            </div>
             <div class="auto-refresh">
                 <label>Auto-refresh (s):</label>
                 <input type="number" id="refreshInterval" value="5" min="1" max="60" onchange="updateAutoRefresh()">
@@ -429,6 +527,38 @@
             </div>
             <div class="modal-body" id="modalBody">
                 <!-- Content will be injected here -->
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="settingsModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Proxy Settings</h2>
+                <button class="close-btn" onclick="closeSettings()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form class="settings-form" onsubmit="saveSettings(event)">
+                    <div class="form-row">
+                        <label for="apiBaseInput">API Base</label>
+                        <input id="apiBaseInput" type="text" placeholder="https://api.openai.com/v1" required>
+                        <div class="helper-text">Must include /v1 in the URL.</div>
+                    </div>
+                    <div class="form-row">
+                        <label for="modelInput">Model</label>
+                        <input id="modelInput" type="text" placeholder="gpt-4o-mini" required>
+                    </div>
+                    <div class="form-row">
+                        <label for="apiKeyInput">API Key</label>
+                        <input id="apiKeyInput" type="password" placeholder="Paste new key" autocomplete="off">
+                        <div class="helper-text">For security, the current key is never shown. Leave blank to keep the existing key.</div>
+                    </div>
+                    <div class="modal-actions">
+                        <button type="button" class="secondary-btn" onclick="closeSettings()">Cancel</button>
+                        <button type="submit" class="primary-btn">Save</button>
+                    </div>
+                    <div class="status-message" id="settingsStatus"></div>
+                </form>
             </div>
         </div>
     </div>
@@ -556,6 +686,63 @@
             document.getElementById('detailModal').classList.remove('active');
         }
 
+        function openSettings() {
+            const status = document.getElementById('settingsStatus');
+            status.textContent = '';
+            document.getElementById('apiKeyInput').value = '';
+            fetch('/api/config')
+                .then(res => res.json())
+                .then(config => {
+                    document.getElementById('apiBaseInput').value = config.api_base || '';
+                    document.getElementById('modelInput').value = config.model || '';
+                    document.getElementById('settingsModal').classList.add('active');
+                })
+                .catch(err => {
+                    status.textContent = 'Failed to load settings.';
+                    console.error(err);
+                });
+        }
+
+        function closeSettings() {
+            document.getElementById('settingsModal').classList.remove('active');
+        }
+
+        function saveSettings(event) {
+            event.preventDefault();
+            const status = document.getElementById('settingsStatus');
+            status.textContent = 'Saving...';
+            const payload = {
+                api_base: document.getElementById('apiBaseInput').value.trim(),
+                model: document.getElementById('modelInput').value.trim()
+            };
+            const apiKey = document.getElementById('apiKeyInput').value.trim();
+            if (apiKey) {
+                payload.api_key = apiKey;
+            }
+            fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .then(res => {
+                if (!res.ok) {
+                    return res.text().then(text => {
+                        throw new Error(text || 'Failed to save settings');
+                    });
+                }
+                return res.json();
+            })
+            .then(() => {
+                status.textContent = 'Saved. New settings are active.';
+                setTimeout(() => {
+                    closeSettings();
+                }, 700);
+            })
+            .catch(err => {
+                status.textContent = err.message || 'Failed to save settings.';
+            });
+        }
+
         function formatJSON(str) {
             try {
                 const obj = JSON.parse(str);
@@ -584,10 +771,17 @@
             }
         });
 
+        document.getElementById('settingsModal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeSettings();
+            }
+        });
+
         // Close modal on Escape key
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') {
                 closeModal();
+                closeSettings();
             }
         });
 
