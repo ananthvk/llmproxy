@@ -4,6 +4,8 @@ I built this because I wanted to see exactly what my agents (mostly Hermes) were
 
 It catches every request, logs the full body, tracks token usage, and calculates the cost in real-time.
 
+![Dashboard screenshot](screenshot.png)
+
 ## why?
 
 - **Visibility:** Agents can be black boxes. This lets you see the raw prompt and response for every single call.
